@@ -1,0 +1,17 @@
+<rsglobal[m]> Hi guys, could somebody help understand the difference between AOSP release suffixes? What is the difference between android-VER, android-platform-VER, android-security-VER, and android-mainline-VER?
+<phh> rsglobal[m]: I can follow through on glodroid discord if you want, but anyway. **for new tags (historically it was different and messier. what I'm going to say is true since like 6 months?)** android-VER is what is pushed on Pixels, which will include QPRs (= new feature releases), android-security-12.0.0_r78 is based off android-12.0.0_r1 and only contains security patches, no QPR. android-mainline-VER are NOT USED to build Android, but to build APEXes. and uh i don't know for android-platform.
+<rsglobal[m]> phh Thank you
+<z3ntu> also matches what I would say. Maybe android-platform is used to build platform-tools and friends?
+<phh> z3ntu: makes sense. could even be the whole SDK. maybe the android-platform-xxx matches platform-tools versioning, but i'm too lazy to check
+<phh> rsglobal[m]: to complement a bit: as a smartphone rom, you probably want to use the android-VER ones, because they have all the shiny new features **BUT** those releases disappear as soon as Pixels have upgraded (as in, the day Pixels get Android 14, you will no longer have security-patched Android 13 QPR3, you'll either have the security patched Android 13 QPR0 or the not-updated/security-patched Android 13 QPR3)
+<phh> (for TVs and autos, QPRs are meaningless, for tablets, I'd put QPRs into "rather useful")
+<z3ntu> phh: you can (more or less easily) merge security tags into the latest release tags so you have both
+<z3ntu> also I've heard something regarding security support on QPR lately, but forgot the details
+<phh> I felt it was implied, but yes
+<phh> and yes on the 'more or less easily'
+<phh> I've maintained something like that ( https://gitlab.com/aosp-security ) for like 3 months before saying fuck it :D
+<phh> ( with https://gitlab.com/aosp-security/syncer for the tool)
+<mkorpershoek> but why syncing the tags/forking all the AOSP repos? isn't cherry-picking manifest updates easier?
+<mkorpershoek> https://android.googlesource.com/platform/manifest/+log/refs/heads/android-13.0.0_r52
+<phh> I literally just explained why, but sounds like that's a fail. If you look at latest android 12 security tag, you'll notice that there is no android 12.1 security tag
+<phh> so if you want an android 12.1 that is security-up-to-date, you need to merge android-security-12 into android-12.1

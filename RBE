@@ -1,0 +1,172 @@
+# Central server
+// RBE = Remote Build Execution
+mkdir RBE
+cd RBE
+screen
+## Tab 1
+git clone https://gitlab.com/BuildGrid/buildgrid
+virtualenv venv
+source venv/bin/activate
+
+## Tab 2
+// This will keep Tab 2 busy with an ephemeral postgresql server
+// It'll automatically be cleanly destroyed when killed
+// This is used as a work-queue
+docker run --rm --name buildgrid-postgres -e POSTGRES_PASSWORD=smurf -ePOSTGRES_USER=bgd -ePOSTGRES_DB=bgd -p 5432:5432 -ti postgres:14-bookworm
+
+## Tab 1
+cat > conf-phh.yml <<EOF
+server:
+  - !channel
+    address: "[::]:50052"
+    insecure-mode: true
+ 
+description: >
+  BuildGrid's default configuration:
+    - Unauthenticated plain HTTP at :50051
+    - Single instance: [unnamed]
+    - In-memory data, max. 2Gio
+    - DataStore: sqlite:///./example.db
+    - Hosted services:
+       - ActionCache
+       - Execute
+       - ContentAddressableStorage
+       - ByteStream
+ 
+authorization:
+  method: none
+ 
+monitoring:
+  enabled: false
+ 
+instances:
+  - name: ''
+    description: |
+      The unique '' instance.
+ 
+    connections:
+      - !sql-connection &sql
+        connection-string: postgresql://bgd:smurf@localhost:5432/bgd
+        automigrate: yes
+        connection-timeout: 15
+ 
+    storages:
+      - !remote-storage &cas-storage
+        url: http://localhost:50012
+        instance-name: ''
+ 
+#    schedulers:
+#      - !sql-scheduler &state-database
+#        sql: *sql
+#        storage: *cas-storage
+#        poll-interval: 0.5
+    schedulers:
+      - !sql-scheduler &state-database
+        storage: *cas-storage
+        connection-string: postgresql://bgd:@localhost:5432/bgd
+        automigrate: yes
+        connection-timeout: 15
+        poll-interval: 0.5
+#      - !memory-scheduler &state-database
+#        storage: *cas-storage
+ 
+    caches:
+      - !remote-action-cache &remote-cache
+        instance-name: ''
+        url: http://localhost:50012
+ 
+    services:
+      - !action-cache
+        cache: *remote-cache
+ 
+      - !execution
+        storage: *cas-storage
+        action-cache: *remote-cache
+        scheduler: *state-database
+        max-execution-timeout: 7200
+        sql: *sql
+        property-keys:
+          - Pool
+          - container-image
+ 
+      - !cas
+        storage: *cas-storage
+ 
+      - !bytestream
+        storage: *cas-storage
+ 
+thread-pool-size: 1000
+EOF
+
+## Tab 3
+git clone https://gitlab.com/BuildGrid/buildbox/buildbox-common.git
+cd buildbox-common
+mkdir build
+cd build
+cmake ..
+make -j8
+sudo make install # Sorry about that ugly one. I promise that's the only one
+
+git clone https://gitlab.com/BuildGrid/buildbox/buildbox-casd.git
+cd buildbox-casd
+mkdir build
+cd build
+sudo apt install libgrpc++-dev
+cmake ..
+make -j8
+
+// ̀~/RBE/cas will be the main object storage (not just a cache: everything that will be executed by RBE will come from and go out this storage)
+// This will run a foreground daemon, from now on Tab 3 will be busy with this
+./builboxcasd/buildbox-casd --bind='[::]:10051' ~/RBE/cas
+
+## Tab 1
+// This will start the orchestrator. We will send our requests through there (though it'll just be command lines, the actual files are sent to cas), and that's there that workers will look for jobs to run
+// From now on Tab 1 will be busy with this
+bgd server start conf-phh.yml
+
+## Tab 4
+git clone https://gitlab.com/BuildGrid/buildbox/buildbox-worker.git
+cd buildbox-worker
+mkdir build
+cd build
+cmake ..
+make -j8
+cd ../..
+git clone https://gitlab.com/BuildGrid/buildbox/buildbox-run-hosttools.git
+cd buildbox-run-hosttools
+mkdir build
+cd build
+cmake ..
+make -j8
+cd ../../buildbox-worker/build
+// Let's launch our first worker!
+./buildbox-worker --bots-remote=http://localhost:50052 --cas-remote=http://localhost:10051 --buildbox-run=../../buildbox-run-hosttools/build/buildbox-run-hosttools --platform OSFamily=Linux --platform Pool=default --platform container-image=docker://gcr.io/androidbuild-re-dockerimage/android-build-remoteexec-image@sha256:582efb38f0c229ea39952fff9e132ccbe183e14869b39888010dacf56b360d62
+
+
+## Tab 5
+// Let's check whether everything works
+cd buildgrid
+source venv/bin/activate
+// You'll never guess what this next command outputs!
+bgd execute --remote http://localhost:50052 --remote-cas http://localhost:10051 command tests echo Hello world
+// Yeah well it doesn't, but anyway you can see in Tab 4 "Runner exited with code 0"
+// That means that it succeed, now let's go to Android!
+
+## Tab 6
+// Note: I'm switching from localhost to <ip> because I'll be compiling Android from another computer
+// This assumes that you already have an AOSP 13 build tree in AOSP
+cd AOSP
+cd prebuilts/remoteexecution-client
+# AOSP13's RBE client is broken
+git fetch aosp
+git checkout aosp/master
+ln -sf 0.111.0.1ccaa23 live # Take whatever is latest version
+cd ../..
+. build/envsetup.sh
+lunch treble_arm64_bvS-userdebug # Use whatever target is relevant for you
+// NINJA_REMOTE_NUM_JOBS here replaces "-j"
+RBE_CXX_EXEC_STRATEGY=remote RBE_service_no_auth=true RBE_service=<central ip>:50052 RBE_cas_service=<central ip>:10051 USE_RBE=1 RBE_v=42 NINJA_REMOTE_NUM_JOBS=1 make curl
+// This will most likely fail because of unsupported -fexperimental-new-pass-manager
+// To fix it, comment it out of build/soong/cc/config/global.go
+// And launch again
+
